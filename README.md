@@ -2,7 +2,7 @@
 
 ## What does it do?
 
-This project fetches metadata from itch.io, and serves the processed data on a website, as well as making it accessible via an accompaning Discord bot.
+This project fetches metadata from itch.io, serves the processed data on a website, and makes it accessible via a Discord bot interface.
 
 There are 3 major components:
 
@@ -77,6 +77,6 @@ python3 main.py &
 python3 web.py &
 ```
 
-Once up and running, you can invite the bot to your server by going to https://<your_domain>/discord and click on the option "Invite Bot with permissions 3072 (Read & Send Messages)"
+Once up and running, you can invite the bot to your server by going to https://<your_domain>/discord and click on the option "Invite Bot with permissions 3072 (Read & Send Messages)"  
 When joined, it will react to the bot commands, and respond within the channel the command was triggered in. User can also subscribe and unsubscribe to individual notifications by interacting with the bot.
 
