@@ -1,0 +1,22 @@
+x-fvnli-bot: &fvnli-bot
+  image: ghcr.io/akibaat/fvn.li-discord-bot:development
+
+services:
+  app:
+    <<: *fvnli-bot
+    restart: unless-stopped
+    networks:
+      - fvnli
+    environment:
+      - DISCORD_API_KEY
+      - DISCORD_ADMIN_ID
+      - DISCORD_CLIENT_ID
+      - DISCORD_CLIENT_SECRET
+      - DISCORD_NOTIFICATIONS_CHANNEL_ID
+      - LARAVEL_API_URL
+      - LARAVEL_API_TOKEN
+
+networks:
+  fvnli:
+    name: ${COMPOSE_NETWORK_NAME}
+    external: true

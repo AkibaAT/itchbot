@@ -27,8 +27,8 @@ Follow the README in the Docker project for setup instructions. This is the reco
 ### Option 2: Self-managed
 
 #### Prerequisites:
-* Unix-like system
-* Python 3.13
+* Unix-like system or Windows
+* Go 1.23 or later
 * Discord bot application with Message Content Intent enabled
 * Access to the [FVN.li](https://github.com/AkibaAT/fvn.li) API
 
@@ -50,16 +50,17 @@ The following environment variables must be set before starting the application:
 git clone https://github.com/AkibaAT/fvn.li-discord-bot.git
 cd fvn.li-discord-bot
 
-# Create and activate virtual environment
-python3 -m pip install --user virtualenv
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-python3 -m pip install -r requirements.txt
+# Build the application
+go build
 
 # Start the Discord bot
-python3 main.py
+./fvn.li-discord-bot
+```
+
+Alternatively, you can run directly with Go:
+
+```bash
+go run .
 ```
 
 ## Related Projects
