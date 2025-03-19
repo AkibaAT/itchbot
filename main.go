@@ -171,9 +171,21 @@ func handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 				for _, game := range resp["games"].([]interface{}) {
 					g := game.(map[string]interface{})
+
+					// Convert the published_at timestamp to string if it's a float64
+					publishedAt := ""
+					switch v := g["published_at"].(type) {
+					case string:
+						publishedAt = v
+					case float64:
+						publishedAt = fmt.Sprintf("%.0f", v)
+					default:
+						publishedAt = fmt.Sprintf("%v", v)
+					}
+
 					builder.WriteString(fmt.Sprintf(
 						"%s, Latest Version: %s, Last Updated At: <t:%s:f> <%s>\n",
-						g["name"], g["version"], g["published_at"], g["url"],
+						g["name"], g["version"], publishedAt, g["url"],
 					))
 				}
 				response = builder.String()
@@ -237,9 +249,21 @@ func buildUpdateMessages(updates []interface{}) []string {
 
 	for _, update := range updates {
 		u := update.(map[string]interface{})
+
+		// Convert the published_at timestamp to string if it's a float64
+		publishedAt := ""
+		switch v := u["published_at"].(type) {
+		case string:
+			publishedAt = v
+		case float64:
+			publishedAt = fmt.Sprintf("%.0f", v)
+		default:
+			publishedAt = fmt.Sprintf("%v", v)
+		}
+
 		entry := fmt.Sprintf(
 			"%s, Latest Version: %s, Last Updated At: <t:%s:f> <%s> | <%s>\n",
-			u["name"], u["version"], u["published_at"], u["url"], u["devlog"],
+			u["name"], u["version"], publishedAt, u["url"], u["devlog"],
 		)
 
 		if currentChunk.Len()+len(entry) > 1900 {
