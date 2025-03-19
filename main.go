@@ -320,6 +320,7 @@ func apiRequest(ctx context.Context, method string, path string, data interface{
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
+	fmt.Printf("Making request to: %s%s\n", laravelAPIURL, path)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -327,17 +328,32 @@ func apiRequest(ctx context.Context, method string, path string, data interface{
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
 		if err != nil {
-
+			fmt.Printf("Error closing response body: %v\n", err)
 		}
 	}(resp.Body)
 
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API request failed: %s", resp.Status)
+	// Read the entire response body
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
 	}
 
+	// Log response status and first part of body for debugging
+	fmt.Printf("Response status: %s\n", resp.Status)
+	bodyPreview := string(bodyBytes)
+	if len(bodyPreview) > 100 {
+		bodyPreview = bodyPreview[:100] + "..."
+	}
+	fmt.Printf("Response body preview: %s\n", bodyPreview)
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API request failed: %s, body: %s", resp.Status, bodyPreview)
+	}
+
+	// Parse the JSON response
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("JSON parsing error: %v, body: %s", err, bodyPreview)
 	}
 
 	return result, nil
