@@ -311,7 +311,9 @@ func apiRequest(ctx context.Context, method string, path string, data interface{
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, laravelAPIURL+path, bytes.NewReader(reqBody))
+	apiPath := "/api" + path
+
+	req, err := http.NewRequestWithContext(ctx, method, laravelAPIURL+apiPath, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +322,7 @@ func apiRequest(ctx context.Context, method string, path string, data interface{
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
-	fmt.Printf("Making request to: %s%s\n", laravelAPIURL, path)
+	fmt.Printf("Making request to: %s%s\n", laravelAPIURL, apiPath)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
