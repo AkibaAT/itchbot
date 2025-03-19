@@ -206,7 +206,7 @@ func handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func notificationLoop(s *discordgo.Session) {
-	ticker := time.NewTicker(30 * time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {

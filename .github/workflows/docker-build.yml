@@ -141,5 +141,6 @@ jobs:
             docker compose pull
             # Only run Docker commands if NOT on development branch
             if [[ "${{ github.ref }}" != "refs/heads/development" ]]; then
-              ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd ${{ secrets.PROJECT_PATH }} && docker compose up -d && docker compose ps"
+              docker compose up -d
+              docker compose ps
             fi
