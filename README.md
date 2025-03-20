@@ -21,8 +21,7 @@ The bot periodically checks for updates and notifies subscribed users about new 
 
 ### Option 1: Docker (Recommended)
 
-A Docker setup for the project can be found at https://github.com/AkibaAT/fvn.li-docker  
-Follow the README in the Docker project for setup instructions. This is the recommended way to run the bot as it handles all dependencies and environment setup automatically.
+Docker configurations are available in this project and the FVN.li web project. Both the bot and web components can be run via Docker using their respective configurations.
 
 ### Option 2: Self-managed
 
@@ -68,4 +67,3 @@ go run .
 This bot works in conjunction with:
 
 * [FVN.li](https://github.com/AkibaAT/fvn.li) - A Laravel application that handles the indexing and metadata processing
-* [FVN.li-docker](https://github.com/AkibaAT/fvn.li-docker) - Docker setup for this project
