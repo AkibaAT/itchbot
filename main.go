@@ -65,14 +65,6 @@ func ready(_ *discordgo.Session, _ *discordgo.Ready) {
 func registerCommands(s *discordgo.Session) {
 	commands := []*discordgo.ApplicationCommand{
 		{
-			Name:        "subscribe",
-			Description: "Subscribe to game update notifications",
-		},
-		{
-			Name:        "unsubscribe",
-			Description: "Unsubscribe from game update notifications",
-		},
-		{
 			Name:        "search",
 			Description: "Search for games",
 			Options: []*discordgo.ApplicationCommandOption{
@@ -97,54 +89,8 @@ func registerCommands(s *discordgo.Session) {
 
 func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.ApplicationCommandData().Name {
-	case "subscribe":
-		handleSubscribe(s, i)
-	case "unsubscribe":
-		handleUnsubscribe(s, i)
 	case "search":
 		handleSearch(s, i)
-	}
-}
-
-func handleSubscribe(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		resp, err := apiRequest(ctx, "POST", "/discord/subscribe", map[string]string{
-			"discord_id": i.Member.User.ID,
-		})
-
-		response := formatResponse(resp, err, "Subscribed to notifications")
-		sendFollowup(s, i, response)
-	}()
-
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-	if err != nil {
-		return
-	}
-}
-
-func handleUnsubscribe(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		resp, err := apiRequest(ctx, "POST", "/discord/unsubscribe", map[string]string{
-			"discord_id": i.Member.User.ID,
-		})
-
-		response := formatResponse(resp, err, "Unsubscribed from notifications")
-		sendFollowup(s, i, response)
-	}()
-
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-	if err != nil {
-		return
 	}
 }
 
@@ -206,11 +152,14 @@ func handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func notificationLoop(s *discordgo.Session) {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
+		// Process legacy updates
 		processUpdates(s)
+		// Process new user-based notifications
+		processUserNotifications(s)
 	}
 }
 
@@ -238,6 +187,124 @@ func processUpdates(s *discordgo.Session) {
 		if shouldNotifyChannel(resp["discord_users"].([]interface{})) {
 			go sendChannelNotifications(s, messageChunks)
 		}
+	}
+}
+
+func processUserNotifications(s *discordgo.Session) {
+	fmt.Println("\n[processUserNotifications] Start")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get pending notifications
+	resp, err := apiRequest(ctx, "GET", "/discord-notifications/pending", nil)
+	if err != nil {
+		fmt.Printf("Error fetching pending notifications: %v\n", err)
+		return
+	}
+
+	notifications, ok := resp["notifications"].([]interface{})
+	if !ok || len(notifications) == 0 {
+		return
+	}
+
+	batchKey := resp["batch_key"].(string)
+	results := make([]map[string]interface{}, 0, len(notifications))
+
+	// Process each notification
+	for _, n := range notifications {
+		notif := n.(map[string]interface{})
+		notificationID := int64(notif["notification_id"].(float64))
+		discordUserID := notif["discord_user_id"].(string)
+		game := notif["game"].(map[string]interface{})
+		isDigest := notif["is_digest"].(bool)
+		digestType := notif["digest_type"]
+
+		// Format the word count diff message
+		var wordCountMsg string
+		if wordCountDiff, ok := game["word_count_diff"].(float64); ok && wordCountDiff != 0 {
+			comparedVersion := game["compared_to_version"].(map[string]interface{})
+			compareType := "previous version"
+			if comparedVersion["is_last_read"].(bool) {
+				compareType = "your last read"
+			}
+			wordCountMsg = fmt.Sprintf("\nWord count change from %s (%s): %+.0f words",
+				compareType,
+				comparedVersion["version"].(string),
+				wordCountDiff)
+		}
+
+		var message string
+		if isDigest {
+			digestTypeStr := "Game Updates"
+			if digestType != nil {
+				switch digestType.(string) {
+				case "daily":
+					digestTypeStr = "Daily Game Updates"
+				case "weekly":
+					digestTypeStr = "Weekly Game Updates"
+				}
+			}
+			message = fmt.Sprintf("%s\n%s\nVersion: %s\nReleased: <t:%d:f>\n%s\nGame: <%s>\nDevlog: <%s>",
+				digestTypeStr,
+				game["name"],
+				game["version"],
+				int64(game["published_at"].(float64)),
+				wordCountMsg,
+				game["url"],
+				game["devlog_url"],
+			)
+		} else {
+			message = fmt.Sprintf("New Update Available!\n\n%s\nVersion: %s\nReleased: <t:%d:f>\n%s\nGame: <%s>\nDevlog: <%s>",
+				game["name"],
+				game["version"],
+				int64(game["published_at"].(float64)),
+				wordCountMsg,
+				game["url"],
+				game["devlog_url"],
+			)
+		}
+
+		// Try to send DM to user
+		success := true
+		var errorMsg string
+
+		user, err := s.User(discordUserID)
+		if err != nil {
+			success = false
+			errorMsg = fmt.Sprintf("Error fetching user: %v", err)
+		} else {
+			channel, err := s.UserChannelCreate(user.ID)
+			if err != nil {
+				success = false
+				errorMsg = fmt.Sprintf("Error creating DM channel: %v", err)
+			} else {
+				_, err = s.ChannelMessageSend(channel.ID, message)
+				if err != nil {
+					success = false
+					errorMsg = fmt.Sprintf("Error sending DM: %v", err)
+				}
+			}
+		}
+
+		// Record result
+		results = append(results, map[string]interface{}{
+			"notification_id": notificationID,
+			"success":         success,
+			"error":           errorMsg,
+		})
+	}
+
+	// Record delivery status
+	statusResp, err := apiRequest(ctx, "POST", "/discord-notifications/status", map[string]interface{}{
+		"batch_key":     batchKey,
+		"notifications": results,
+	})
+
+	if err != nil {
+		fmt.Printf("Error recording notification status: %v\n", err)
+	} else {
+		fmt.Printf("Notification status recorded: %v\n", statusResp["message"])
 	}
 }
 
@@ -383,16 +450,6 @@ func apiRequest(ctx context.Context, method string, path string, data interface{
 	}
 
 	return result, nil
-}
-
-func formatResponse(resp map[string]interface{}, err error, successMsg string) string {
-	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
-	}
-	if msg, ok := resp["message"].(string); ok {
-		return msg
-	}
-	return successMsg
 }
 
 func sendFollowup(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
