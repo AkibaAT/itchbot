@@ -160,6 +160,8 @@ func notificationLoop(s *discordgo.Session) {
 		processUpdates(s)
 		// Process new user-based notifications
 		processUserNotifications(s)
+		// Process addition request notifications
+		processAdditionRequestNotifications(s)
 	}
 }
 
@@ -305,6 +307,71 @@ func processUserNotifications(s *discordgo.Session) {
 		fmt.Printf("Error recording notification status: %v\n", err)
 	} else {
 		fmt.Printf("Notification status recorded: %v\n", statusResp["message"])
+	}
+}
+
+func processAdditionRequestNotifications(s *discordgo.Session) {
+	fmt.Println("\n[processAdditionRequestNotifications] Start")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get pending addition request notifications
+	resp, err := apiRequest(ctx, "GET", "/discord-notifications/addition-requests", map[string]interface{}{
+		"limit": 20,
+		"since": time.Now().Add(-5 * time.Minute).Format(time.RFC3339), // Last 5 minutes
+	})
+	if err != nil {
+		fmt.Printf("Error fetching addition request notifications: %v\n", err)
+		return
+	}
+
+	notifications, ok := resp["notifications"].([]interface{})
+	if !ok || len(notifications) == 0 {
+		return
+	}
+
+	adminPanelURL, _ := resp["admin_panel_url"].(string)
+
+	// Send notifications to admin channel
+	if discordNotificationsChan != "" {
+		for _, notification := range notifications {
+			n := notification.(map[string]interface{})
+
+			url := n["url"].(string)
+			userCount := int(n["user_count"].(float64))
+			users := n["users"].([]interface{})
+
+			// Build user list
+			var userNames []string
+			for _, user := range users {
+				u := user.(map[string]interface{})
+				userNames = append(userNames, u["name"].(string))
+			}
+
+			message := fmt.Sprintf("🎮 **New VN Addition Request**\n\n"+
+				"**URL:** %s\n"+
+				"**Requested by:** %s (%d user%s)\n"+
+				"**Admin Panel:** <%s>",
+				url,
+				strings.Join(userNames, ", "),
+				userCount,
+				func() string {
+					if userCount != 1 {
+						return "s"
+					}
+					return ""
+				}(),
+				adminPanelURL,
+			)
+
+			_, err = s.ChannelMessageSend(discordNotificationsChan, message)
+			if err != nil {
+				fmt.Printf("Error sending addition request notification: %v\n", err)
+			} else {
+				fmt.Printf("Sent addition request notification for: %s\n", url)
+			}
+		}
 	}
 }
 
