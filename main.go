@@ -129,9 +129,11 @@ func handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
 						publishedAt = fmt.Sprintf("%v", v)
 					}
 
+					url := extractURL(g["url"])
+
 					builder.WriteString(fmt.Sprintf(
 						"%s, Latest Version: %s, Last Updated At: <t:%s:f> <%s>\n",
-						g["name"], g["version"], publishedAt, g["url"],
+						g["name"], g["version"], publishedAt, url,
 					))
 				}
 				response = builder.String()
@@ -222,6 +224,15 @@ func processUserNotifications(s *discordgo.Session) {
 		isDigest := notif["is_digest"].(bool)
 		digestType := notif["digest_type"]
 
+		// Handle URL which can be a string or a map
+		gameURL := extractURL(game["url"])
+
+		// Handle devlog_url which can be a string or nil
+		devlogURL := ""
+		if dv, ok := game["devlog_url"].(string); ok {
+			devlogURL = dv
+		}
+
 		// Format the word count diff message
 		var wordCountMsg string
 		if wordCountDiff, ok := game["word_count_diff"].(float64); ok && wordCountDiff != 0 {
@@ -253,8 +264,8 @@ func processUserNotifications(s *discordgo.Session) {
 				game["version"],
 				int64(game["published_at"].(float64)),
 				wordCountMsg,
-				game["url"],
-				game["devlog_url"],
+				gameURL,
+				devlogURL,
 			)
 		} else {
 			message = fmt.Sprintf("New Update Available!\n\n%s\nVersion: %s\nReleased: <t:%d:f>\n%s\nGame: <%s>\nDevlog: <%s>",
@@ -262,8 +273,8 @@ func processUserNotifications(s *discordgo.Session) {
 				game["version"],
 				int64(game["published_at"].(float64)),
 				wordCountMsg,
-				game["url"],
-				game["devlog_url"],
+				gameURL,
+				devlogURL,
 			)
 		}
 
@@ -337,7 +348,6 @@ func processAdditionRequestNotifications(s *discordgo.Session) {
 	if discordNotificationsChan != "" {
 		for _, notification := range notifications {
 			n := notification.(map[string]interface{})
-
 			url := n["url"].(string)
 			userCount := int(n["user_count"].(float64))
 			users := n["users"].([]interface{})
@@ -395,9 +405,11 @@ func buildUpdateMessages(updates []interface{}) []string {
 			publishedAt = fmt.Sprintf("%v", v)
 		}
 
+		url := extractURL(u["url"])
+
 		entry := fmt.Sprintf(
 			"%s, Latest Version: %s, Last Updated At: <t:%s:f> <%s> | <%s>\n",
-			u["name"], u["version"], publishedAt, u["url"], u["devlog"],
+			u["name"], u["version"], publishedAt, url, u["devlog"],
 		)
 
 		if currentChunk.Len()+len(entry) > 1900 {
@@ -526,4 +538,21 @@ func sendFollowup(s *discordgo.Session, i *discordgo.InteractionCreate, message 
 	if err != nil {
 		fmt.Printf("Error sending followup: %v\n", err)
 	}
+}
+
+func extractURL(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case map[string]interface{}:
+		// Try to find a valid URL in order of preference
+		if u, ok := val["itch_io"].(string); ok && u != "" {
+			return u
+		} else if u, ok := val["steam"].(string); ok && u != "" {
+			return u
+		} else if u, ok := val["other"].(string); ok && u != "" {
+			return u
+		}
+	}
+	return ""
 }
