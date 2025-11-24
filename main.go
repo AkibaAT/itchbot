@@ -344,8 +344,20 @@ func processAdditionRequestNotifications(s *discordgo.Session) {
 
 	adminPanelURL, _ := resp["admin_panel_url"].(string)
 
-	// Send notifications to admin channel
-	if discordNotificationsChan != "" {
+	// Send notifications to admin user via DM
+	if discordAdminID != "" {
+		user, err := s.User(discordAdminID)
+		if err != nil {
+			fmt.Printf("Error fetching admin user: %v\n", err)
+			return
+		}
+
+		channel, err := s.UserChannelCreate(user.ID)
+		if err != nil {
+			fmt.Printf("Error creating DM channel for admin: %v\n", err)
+			return
+		}
+
 		for _, notification := range notifications {
 			n := notification.(map[string]interface{})
 			url := n["url"].(string)
@@ -375,9 +387,9 @@ func processAdditionRequestNotifications(s *discordgo.Session) {
 				adminPanelURL,
 			)
 
-			_, err = s.ChannelMessageSend(discordNotificationsChan, message)
+			_, err = s.ChannelMessageSend(channel.ID, message)
 			if err != nil {
-				fmt.Printf("Error sending addition request notification: %v\n", err)
+				fmt.Printf("Error sending addition request notification to admin: %v\n", err)
 			} else {
 				fmt.Printf("Sent addition request notification for: %s\n", url)
 			}
