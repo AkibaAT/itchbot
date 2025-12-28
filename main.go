@@ -110,31 +110,44 @@ func handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if err != nil {
 			response = fmt.Sprintf("Error: %v", err)
 		} else {
-			if resp["matches"].(float64) > 0 {
+			if matches := int(resp["matches"].(float64)); matches > 0 {
 				var builder strings.Builder
-				builder.WriteString(fmt.Sprintf("Found %.0f matches for \"%s\":\n",
-					resp["matches"].(float64), name))
+				builder.WriteString(fmt.Sprintf("**Found %d matches for \"%s\":**\n", matches, name))
 
 				for _, game := range resp["games"].([]interface{}) {
 					g := game.(map[string]interface{})
 
-					// Convert the published_at timestamp to string if it's a float64
-					publishedAt := ""
-					switch v := g["published_at"].(type) {
-					case string:
-						publishedAt = v
-					case float64:
-						publishedAt = fmt.Sprintf("%.0f", v)
-					default:
-						publishedAt = fmt.Sprintf("%v", v)
+					// Version
+					version := g["version"]
+					if version == nil {
+						version = "unknown"
 					}
 
-					url := extractURL(g["url"])
+					// Word count
+					var wordCount string
+					if wc, ok := g["english_word_count"].(float64); ok && wc > 0 {
+						wordCount = fmt.Sprintf(", %,.0f words", wc)
+					}
 
-					builder.WriteString(fmt.Sprintf(
-						"%s, Latest Version: %s, Last Updated At: <t:%s:f> <%s>\n",
-						g["name"], g["version"], publishedAt, url,
-					))
+					// Last updated
+					var lastUpdated string
+					switch v := g["published_at"].(type) {
+					case float64:
+						lastUpdated = fmt.Sprintf(", updated <t:%.0f:R>", v)
+					}
+
+					// Primary URL
+					var primaryURL string
+					if url, ok := g["primary_url"].(string); ok && url != "" {
+						primaryURL = fmt.Sprintf("\n<%s>", url)
+					}
+
+					builder.WriteString(fmt.Sprintf("**%s** (v%s%s%s)\n<%s>%s\n\n",
+						g["name"], version, wordCount, lastUpdated, g["url"], primaryURL))
+				}
+
+				if searchURL, ok := resp["search_url"].(string); ok {
+					builder.WriteString(fmt.Sprintf("[View all results](%s)", searchURL))
 				}
 				response = builder.String()
 			} else {
