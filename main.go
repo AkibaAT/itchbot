@@ -177,6 +177,8 @@ func notificationLoop(s *discordgo.Session) {
 		processUserNotifications(s)
 		// Process addition request notifications
 		processAdditionRequestNotifications(s)
+		// Process review report notifications
+		processReviewReportNotifications(s)
 	}
 }
 
@@ -406,6 +408,80 @@ func processAdditionRequestNotifications(s *discordgo.Session) {
 			} else {
 				fmt.Printf("Sent addition request notification for: %s\n", url)
 			}
+		}
+	}
+}
+
+func processReviewReportNotifications(s *discordgo.Session) {
+	fmt.Println("\n[processReviewReportNotifications] Start")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := apiRequest(ctx, "GET", "/discord-notifications/review-reports", nil)
+	if err != nil {
+		fmt.Printf("Error fetching review report notifications: %v\n", err)
+		return
+	}
+
+	notifications, ok := resp["notifications"].([]interface{})
+	if !ok || len(notifications) == 0 {
+		return
+	}
+
+	if discordAdminID == "" {
+		fmt.Println("No admin ID configured, skipping review report notifications")
+		return
+	}
+
+	user, err := s.User(discordAdminID)
+	if err != nil {
+		fmt.Printf("Error fetching admin user: %v\n", err)
+		return
+	}
+
+	channel, err := s.UserChannelCreate(user.ID)
+	if err != nil {
+		fmt.Printf("Error creating DM channel for admin: %v\n", err)
+		return
+	}
+
+	for _, notification := range notifications {
+		n := notification.(map[string]interface{})
+		reason, _ := n["reason"].(string)
+		reporter, _ := n["reporter"].(string)
+		reviewAuthor, _ := n["review_author"].(string)
+		gameName, _ := n["game_name"].(string)
+		details, _ := n["details"].(string)
+		reviewExcerpt, _ := n["review_excerpt"].(string)
+		adminPanelURL, _ := n["admin_panel_url"].(string)
+
+		message := fmt.Sprintf("🚩 **Review Report**\n\n"+
+			"**Game:** %s\n"+
+			"**Review by:** %s\n"+
+			"**Reported by:** %s\n"+
+			"**Reason:** %s\n",
+			gameName,
+			reviewAuthor,
+			reporter,
+			reason,
+		)
+
+		if details != "" {
+			message += fmt.Sprintf("**Details:** %s\n", details)
+		}
+
+		if reviewExcerpt != "" {
+			message += fmt.Sprintf("\n> %.200s\n", reviewExcerpt)
+		}
+
+		message += fmt.Sprintf("\n**Admin Panel:** <%s>", adminPanelURL)
+
+		_, err = s.ChannelMessageSend(channel.ID, message)
+		if err != nil {
+			fmt.Printf("Error sending review report notification to admin: %v\n", err)
+		} else {
+			fmt.Printf("Sent review report notification for game: %s\n", gameName)
 		}
 	}
 }
