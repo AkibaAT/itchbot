@@ -98,7 +98,30 @@ func handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	options := i.ApplicationCommandData().Options
 	name := options[0].StringValue()
 
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		fmt.Printf("Error deferring search response: %v\n", err)
+		return
+	}
+
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[Search] Panic: %v\n", r)
+				sendFollowup(s, i, fmt.Sprintf("An unexpected error occurred while searching for \"%s\"", name))
+			}
+		}()
+
+		username := "unknown"
+		if i.Member != nil && i.Member.User != nil {
+			username = i.Member.User.Username
+		} else if i.User != nil {
+			username = i.User.Username
+		}
+		fmt.Printf("[Search] Query: %q (user: %s)\n", name, username)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -108,62 +131,70 @@ func handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		var response string
 		if err != nil {
+			fmt.Printf("[Search] API error: %v\n", err)
 			response = fmt.Sprintf("Error: %v", err)
 		} else {
-			if matches := int(resp["matches"].(float64)); matches > 0 {
-				var builder strings.Builder
-				builder.WriteString(fmt.Sprintf("**Found %d matches for \"%s\":**\n", matches, name))
+			matches, ok := resp["matches"].(float64)
+			if !ok {
+				response = fmt.Sprintf("Error: unexpected response from API")
+			} else if int(matches) > 0 {
+				games, ok := resp["games"].([]interface{})
+				if !ok {
+					response = fmt.Sprintf("Error: unexpected response from API")
+				} else {
+					var builder strings.Builder
+					builder.WriteString(fmt.Sprintf("**Found %d matches for \"%s\":**\n", int(matches), name))
 
-				for _, game := range resp["games"].([]interface{}) {
-					g := game.(map[string]interface{})
+					for _, game := range games {
+						g, ok := game.(map[string]interface{})
+						if !ok {
+							continue
+						}
 
-					// Version
-					version := g["version"]
-					if version == nil {
-						version = "unknown"
+						// Version
+						version := g["version"]
+						if version == nil {
+							version = "unknown"
+						}
+
+						// Word count
+						var wordCount string
+						if wc, ok := g["english_word_count"].(float64); ok && wc > 0 {
+							wordCount = fmt.Sprintf(", %.0f words", wc)
+						}
+
+						// Last updated
+						var lastUpdated string
+						switch v := g["published_at"].(type) {
+						case float64:
+							lastUpdated = fmt.Sprintf(", updated <t:%.0f:R>", v)
+						}
+
+						// Primary URL
+						var primaryURL string
+						if url, ok := g["primary_url"].(string); ok && url != "" {
+							primaryURL = fmt.Sprintf("\n<%s>", url)
+						}
+
+						url := extractURL(g["url"])
+
+						builder.WriteString(fmt.Sprintf("**%s** (v%s%s%s)\n<%s>%s\n\n",
+							g["name"], version, wordCount, lastUpdated, url, primaryURL))
 					}
 
-					// Word count
-					var wordCount string
-					if wc, ok := g["english_word_count"].(float64); ok && wc > 0 {
-						wordCount = fmt.Sprintf(", %,.0f words", wc)
+					if searchURL, ok := resp["search_url"].(string); ok {
+						builder.WriteString(fmt.Sprintf("[View all results](%s)", searchURL))
 					}
-
-					// Last updated
-					var lastUpdated string
-					switch v := g["published_at"].(type) {
-					case float64:
-						lastUpdated = fmt.Sprintf(", updated <t:%.0f:R>", v)
-					}
-
-					// Primary URL
-					var primaryURL string
-					if url, ok := g["primary_url"].(string); ok && url != "" {
-						primaryURL = fmt.Sprintf("\n<%s>", url)
-					}
-
-					builder.WriteString(fmt.Sprintf("**%s** (v%s%s%s)\n<%s>%s\n\n",
-						g["name"], version, wordCount, lastUpdated, g["url"], primaryURL))
+					response = builder.String()
 				}
-
-				if searchURL, ok := resp["search_url"].(string); ok {
-					builder.WriteString(fmt.Sprintf("[View all results](%s)", searchURL))
-				}
-				response = builder.String()
 			} else {
 				response = fmt.Sprintf("Found no matches for \"%s\"", name)
 			}
 		}
 
+		fmt.Printf("[Search] Response length: %d chars\n", len(response))
 		sendFollowup(s, i, response)
 	}()
-
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-	if err != nil {
-		return
-	}
 }
 
 func notificationLoop(s *discordgo.Session) {
@@ -637,7 +668,7 @@ func sendFollowup(s *discordgo.Session, i *discordgo.InteractionCreate, message 
 		Content: message,
 	})
 	if err != nil {
-		fmt.Printf("Error sending followup: %v\n", err)
+		fmt.Printf("[Followup] Error: %v (message length: %d)\n", err, len(message))
 	}
 }
 
