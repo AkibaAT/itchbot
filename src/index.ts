@@ -1,0 +1,43 @@
+import {Client, IntentsBitField} from 'discord.js';
+import {config} from './config.ts';
+import {registerCommands, registerEvents} from './events/handlers.ts';
+import {NotificationService} from './services/notifications.ts';
+
+const client = new Client({
+    intents: [
+        IntentsBitField.Flags.Guilds,
+        IntentsBitField.Flags.GuildMessages,
+        IntentsBitField.Flags.DirectMessages,
+    ],
+});
+
+const notificationService = new NotificationService(client);
+
+registerEvents(client);
+
+async function main() {
+    client.once('ready', async () => {
+        console.log('Discord connection established');
+        await registerCommands(client);
+        startNotificationLoop();
+    });
+
+    await client.login(config.discord.token);
+}
+
+function startNotificationLoop() {
+    const poll = async () => {
+        await notificationService.processUpdates();
+        await notificationService.processUserNotifications();
+        await notificationService.processAdditionRequestNotifications();
+        await notificationService.processReviewReportNotifications();
+    };
+
+    poll();
+    setInterval(poll, config.polling.intervalMs);
+}
+
+main().catch((error) => {
+    console.error('Fatal error:', error);
+    process.exit(1);
+});

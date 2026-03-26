@@ -1,12 +1,14 @@
-# Build stage
-FROM golang:1.24-alpine AS builder
+FROM oven/bun:1-alpine AS builder
 WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 COPY . .
-RUN CGO_ENABLED=0 go build -o fvnli-discord-bot .
 
-# Final stage - empty container
-FROM scratch
-COPY --from=builder /app/fvnli-discord-bot /fvnli-discord-bot
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /bin/false /bin/false
-CMD ["/fvnli-discord-bot"]
+FROM oven/bun:1-alpine
+WORKDIR /app
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/bun.lock ./
+COPY --from=builder /app/src ./src
+COPY --from=builder /app/node_modules ./node_modules
+ENV NODE_ENV=production
+CMD ["bun", "run", "src/index.ts"]

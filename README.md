@@ -8,26 +8,22 @@ The project works in conjunction with [FVN.li](https://github.com/AkibaAT/fvn.li
 
 ### Current Functionality:
 
-The Discord bot offers several commands:
+* `/search` - Search for visual novels by name, returns matches with version, word count, last updated, and links
 
-* `/subscribe` - Subscribe to receive private messages whenever an update has been found
-* `/unsubscribe` - Unsubscribe from the private message
-* `/refresh` - Refresh metadata for a specific game
-* `/search` - Search for a particular pattern, and return all matches with update information
-
-The bot periodically checks for updates and notifies subscribed users about new game versions.
+The bot periodically polls the API for updates and notifies subscribed users.
 
 ## How Do I Run It?
 
 ### Option 1: Docker (Recommended)
 
-Docker configurations are available in this project and the FVN.li web project. Both the bot and web components can be run via Docker using their respective configurations.
+```bash
+docker compose up -d
+```
 
 ### Option 2: Self-managed
 
 #### Prerequisites:
-* Unix-like system or Windows
-* Go 1.23 or later
+* Bun 1.0 or later
 * Discord bot application with Message Content Intent enabled
 * Access to the [FVN.li](https://github.com/AkibaAT/fvn.li) API
 
@@ -35,13 +31,13 @@ Docker configurations are available in this project and the FVN.li web project. 
 The following environment variables must be set before starting the application:
 
 **FVN.li API Configuration:**
-* `API_URL` - URL of the FVN.li API
-* `API_KEY` - Your API key for accessing the FVN.li API
+* `LARAVEL_API_URL` - URL of the FVN.li API
+* `LARAVEL_API_TOKEN` - Your API token for accessing the FVN.li API
 
 **Discord Configuration:**
 * `DISCORD_API_KEY` - Bot token from Discord Developer Portal
-* `DISCORD_ADMIN_ID` - Discord user ID for the admin
-* `DISCORD_NOTIFICATIONS_CHANNEL_ID` - Channel ID for notifications
+* `DISCORD_ADMIN_ID` - Discord user ID for admin notifications
+* `DISCORD_NOTIFICATIONS_CHANNEL_ID` - Channel ID for broadcast notifications
 
 #### Installation and Setup:
 ```bash
@@ -49,18 +45,50 @@ The following environment variables must be set before starting the application:
 git clone https://github.com/AkibaAT/fvn.li-discord-bot.git
 cd fvn.li-discord-bot
 
-# Build the application
-go build
+# Install dependencies
+bun install
 
 # Start the Discord bot
-./fvn.li-discord-bot
+bun run src/index.ts
 ```
 
-Alternatively, you can run directly with Go:
+## Project Structure
 
-```bash
-go run .
 ```
+src/
+├── index.ts              # Main entry point
+├── config.ts             # Environment configuration
+├── commands/
+│   ├── index.ts          # Command registry
+│   └── search.ts         # /search command
+├── events/
+│   └── handlers.ts       # Discord event handlers
+└── services/
+    ├── api.ts            # Laravel API client
+    └── notifications.ts  # Notification polling service
+```
+
+## Adding New Commands
+
+Create a new file in `src/commands/` following this pattern:
+
+```typescript
+import { SlashCommandBuilder } from 'discord.js';
+import type { ChatInputCommandInteraction } from 'discord.js';
+import type { Command } from './index.ts';
+
+export const myCommand: Command = {
+  data: new SlashCommandBuilder()
+    .setName('mycommand')
+    .setDescription('Description here'),
+
+  async execute(interaction: ChatInputCommandInteraction) {
+    // Handle command
+  },
+};
+```
+
+Then register it in `src/events/handlers.ts`.
 
 ## Related Projects
 
