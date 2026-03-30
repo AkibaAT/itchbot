@@ -92,6 +92,59 @@ export const api = {
     }> {
         return this.request('GET', '/discord-notifications/review-reports', null);
     },
+
+    async getPendingServerNotifications(limit = 50): Promise<{
+        notifications: ServerNotification[];
+        count: number;
+    }> {
+        return this.request('GET', `/bot/servers/pending-notifications?limit=${limit}`, null);
+    },
+
+    async markServerNotificationDelivered(notificationId: number, messageId?: string): Promise<{ message: string }> {
+        return this.request('POST', `/bot/servers/notifications/${notificationId}/delivered`, {message_id: messageId});
+    },
+
+    async markServerNotificationFailed(notificationId: number, errorMessage?: string): Promise<{ message: string }> {
+        return this.request('POST', `/bot/servers/notifications/${notificationId}/failed`, {error_message: errorMessage});
+    },
+
+    async syncChannels(
+        discordServerId: string,
+        channels: Array<{ id: string; name: string; type?: number; nsfw?: boolean }>
+    ): Promise<{ message: string; count: number }> {
+        return this.request('POST', '/bot/servers/sync-channels', {
+            discord_server_id: discordServerId,
+            channels,
+        });
+    },
+
+    async syncMembers(
+        discordServerId: string,
+        members: Array<{ discord_user_id: string; discord_username: string; is_admin: boolean }>
+    ): Promise<{ message: string; count: number }> {
+        return this.request('POST', '/bot/servers/sync-members', {
+            discord_server_id: discordServerId,
+            members,
+        });
+    },
+
+    async botJoined(
+        discordServerId: string,
+        serverName: string,
+        channels?: Array<{ id: string; name: string; type?: number; nsfw?: boolean }>,
+        ownerDiscordId?: string
+    ): Promise<{ message: string }> {
+        return this.request('POST', '/bot/servers/bot-joined', {
+            discord_server_id: discordServerId,
+            discord_server_name: serverName,
+            channels,
+            owner_discord_id: ownerDiscordId,
+        });
+    },
+
+    async botLeft(discordServerId: string): Promise<{ message: string }> {
+        return this.request('POST', `/bot/servers/${discordServerId}/bot-left`, null);
+    },
 };
 
 export interface GameResult {
@@ -150,6 +203,18 @@ export interface ReviewReport {
     details: string;
     review_excerpt: string;
     admin_panel_url: string;
+}
+
+export interface ServerNotification {
+    id: number;
+    discord_server_id: string;
+    channel_id: string;
+    payload: {
+        content?: string;
+        embeds?: Array<Record<string, unknown>>;
+    } | null;
+    game_name?: string;
+    notification_type: string;
 }
 
 export function extractUrl(url: string | UrlMap | undefined | null): string {

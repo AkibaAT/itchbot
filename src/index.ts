@@ -1,7 +1,9 @@
 import {Client, Events, IntentsBitField} from 'discord.js';
 import {config} from './config.ts';
 import {registerCommands, registerEvents} from './events/handlers.ts';
+import {registerGuildEvents} from './events/guilds.ts';
 import {NotificationService} from './services/notifications.ts';
+import {ServerNotificationService} from './services/server-notifications.ts';
 
 const client = new Client({
     intents: [
@@ -12,8 +14,10 @@ const client = new Client({
 });
 
 const notificationService = new NotificationService(client);
+const serverNotificationService = new ServerNotificationService(client);
 
 registerEvents(client);
+registerGuildEvents(client);
 
 async function main() {
     client.once(Events.ClientReady, async () => {
@@ -31,6 +35,7 @@ function startNotificationLoop() {
         await notificationService.processUserNotifications();
         await notificationService.processAdditionRequestNotifications();
         await notificationService.processReviewReportNotifications();
+        await serverNotificationService.processServerNotifications();
     };
 
     poll();

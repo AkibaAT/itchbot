@@ -73,7 +73,14 @@ export const searchCommand: Command = {
             }
 
             if (response.length > 2000) {
-                response = response.slice(0, 1950) + `\n\n… results truncated`;
+                // Truncate at the last complete game entry to avoid breaking formatting
+                const lines = response.split('\n\n');
+                response = '';
+                for (const block of lines) {
+                    if ((response + block + '\n\n').length > 1900) break;
+                    response += block + '\n\n';
+                }
+                response += '… results truncated';
                 if (result.search_url) {
                     response += ` — [view all](${result.search_url})`;
                 }
