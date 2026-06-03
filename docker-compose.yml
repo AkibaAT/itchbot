@@ -2,7 +2,7 @@ x-fvnli-bot: &fvnli-bot
   image: ghcr.io/akibaat/fvn.li-discord-bot:development
 
 services:
-  app:
+  bot:
     <<: *fvnli-bot
     restart: unless-stopped
     networks:
