@@ -6,6 +6,7 @@ COPY . .
 
 FROM oven/bun:1-alpine
 WORKDIR /app
+RUN apk add --no-cache ca-certificates curl && update-ca-certificates
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/bun.lock ./
 COPY --from=builder /app/src ./src

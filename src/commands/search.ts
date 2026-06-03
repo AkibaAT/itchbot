@@ -1,5 +1,9 @@
 import type {ChatInputCommandInteraction} from 'discord.js';
-import {SlashCommandBuilder} from 'discord.js';
+import {
+    ApplicationIntegrationType,
+    InteractionContextType,
+    SlashCommandBuilder,
+} from 'discord.js';
 import {api, extractUrl} from '../services/api.ts';
 import type {Command} from './index.ts';
 
@@ -7,6 +11,15 @@ export const searchCommand: Command = {
     data: new SlashCommandBuilder()
         .setName('search')
         .setDescription('Search for visual novels by name')
+        .setContexts(
+            InteractionContextType.Guild,
+            InteractionContextType.BotDM,
+            InteractionContextType.PrivateChannel
+        )
+        .setIntegrationTypes(
+            ApplicationIntegrationType.GuildInstall,
+            ApplicationIntegrationType.UserInstall
+        )
         .addStringOption((option) =>
             option
                 .setName('name')
