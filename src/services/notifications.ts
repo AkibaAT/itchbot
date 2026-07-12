@@ -1,9 +1,13 @@
 import type {Client, GuildTextBasedChannel} from 'discord.js';
 import {api, extractUrl, type Update} from './api.ts';
 import {config} from '../config.ts';
+import {DeliveryPolicy} from './delivery-policy.ts';
 
 export class NotificationService {
+    private readonly deliveryPolicy: DeliveryPolicy;
+
     constructor(private client: Client) {
+        this.deliveryPolicy = new DeliveryPolicy(config.discord);
     }
 
     async processUpdates() {
@@ -43,6 +47,12 @@ export class NotificationService {
 
             for (const notif of notifications) {
                 const {notification_id, discord_user_id, game, is_digest, digest_type} = notif;
+
+                if (!this.deliveryPolicy.allowsUser(discord_user_id)) {
+                    console.log(`[processUserNotifications] Dev mode: marked ${notification_id} processed without sending to user ${discord_user_id}`);
+                    results.push({notification_id, success: true, error: ''});
+                    continue;
+                }
 
                 const gameUrl = extractUrl(game.url);
                 const devlogUrl = game.devlog_url ?? '';
@@ -84,7 +94,7 @@ export class NotificationService {
     async processAdditionRequestNotifications() {
         console.log('\n[processAdditionRequestNotifications] Start');
 
-        if (!config.discord.adminId) {
+        if (!config.discord.adminId && !this.deliveryPolicy.isDevMode) {
             console.log('[processAdditionRequestNotifications] No admin ID configured, skipping');
             return;
         }
@@ -94,6 +104,11 @@ export class NotificationService {
             const notifications = resp.notifications;
 
             if (!notifications || notifications.length === 0) return;
+
+            if (!this.deliveryPolicy.allowsUser(config.discord.adminId)) {
+                console.log(`[processAdditionRequestNotifications] Dev mode: marked ${notifications.length} notification(s) processed without sending`);
+                return;
+            }
 
             const adminPanelUrl = resp.admin_panel_url ?? '';
             const adminUser = await this.client.users.fetch(config.discord.adminId);
@@ -116,7 +131,7 @@ export class NotificationService {
     async processReviewReportNotifications() {
         console.log('\n[processReviewReportNotifications] Start');
 
-        if (!config.discord.adminId) {
+        if (!config.discord.adminId && !this.deliveryPolicy.isDevMode) {
             console.log('[processReviewReportNotifications] No admin ID configured, skipping');
             return;
         }
@@ -126,6 +141,11 @@ export class NotificationService {
             const notifications = resp.notifications;
 
             if (!notifications || notifications.length === 0) return;
+
+            if (!this.deliveryPolicy.allowsUser(config.discord.adminId)) {
+                console.log(`[processReviewReportNotifications] Dev mode: marked ${notifications.length} notification(s) processed without sending`);
+                return;
+            }
 
             const adminUser = await this.client.users.fetch(config.discord.adminId);
             const channel = await adminUser.createDM();
@@ -179,6 +199,11 @@ export class NotificationService {
     }
 
     private async sendUserNotifications(userId: string, chunks: string[]) {
+        if (!this.deliveryPolicy.allowsUser(userId)) {
+            console.log(`[sendUserNotifications] Dev mode: skipped user ${userId}`);
+            return;
+        }
+
         try {
             const user = await this.client.users.fetch(userId);
             const channel = await user.createDM();
@@ -198,6 +223,11 @@ export class NotificationService {
             const channel = await this.client.channels.fetch(channelId) as GuildTextBasedChannel | null;
             if (!channel) {
                 console.error('[sendChannelNotifications] Channel not found');
+                return;
+            }
+
+            if (!this.deliveryPolicy.allowsGuild(channel.guildId)) {
+                console.log(`[sendChannelNotifications] Dev mode: skipped guild ${channel.guildId}`);
                 return;
             }
 

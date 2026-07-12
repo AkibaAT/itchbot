@@ -39,6 +39,13 @@ The following environment variables must be set before starting the application:
 * `DISCORD_ADMIN_ID` - Discord user ID for admin notifications
 * `DISCORD_NOTIFICATIONS_CHANNEL_ID` - Channel ID for broadcast notifications
 
+**Optional development mode:**
+* `DISCORD_DEV_MODE` - Set to `true` to restrict Discord deliveries
+* `DISCORD_DEV_USER_IDS` - Comma-separated Discord user IDs allowed to receive DMs in development mode
+* `DISCORD_DEV_GUILD_IDS` - Comma-separated Discord guild IDs allowed to receive channel messages in development mode
+
+In development mode, queued notifications for users outside the allowlist are reported to the API as successfully processed without contacting Discord. Addition-request and review-report notifications are likewise consumed without delivery when the configured admin is not allowlisted. Production delivery behavior is unchanged when `DISCORD_DEV_MODE` is unset or false.
+
 #### Installation and Setup:
 ```bash
 # Clone the repository

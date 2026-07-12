@@ -1,4 +1,4 @@
-import {Client, IntentsBitField} from 'discord.js';
+import {Client, Events, IntentsBitField} from 'discord.js';
 import {config} from './config.ts';
 import {registerCommands, registerEvents} from './events/handlers.ts';
 import {NotificationService} from './services/notifications.ts';
@@ -16,7 +16,7 @@ const notificationService = new NotificationService(client);
 registerEvents(client);
 
 async function main() {
-    client.once('ready', async () => {
+    client.once(Events.ClientReady, async () => {
         console.log('Discord connection established');
         await registerCommands(client);
         startNotificationLoop();
