@@ -8,6 +8,7 @@
     "dev": "bun run src/index.ts"
   },
   "dependencies": {
+    "discord-api-types": "^0.38.49",
     "discord.js": "^14.26.5"
   },
   "devDependencies": {

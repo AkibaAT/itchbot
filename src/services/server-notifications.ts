@@ -5,7 +5,11 @@ const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 3000;
 
 export class ServerNotificationService {
-  constructor(private client: Client) {}
+  private readonly client: Client;
+
+  constructor(client: Client) {
+    this.client = client;
+  }
 
   async processServerNotifications() {
     console.log("\n[processServerNotifications] Start");
@@ -94,11 +98,31 @@ export class ServerNotificationService {
         : `Notification: ${notif.notification_type}`;
     }
 
-    const message = await (channel as any).send(messageOptions);
+    let message;
+    if (notif.delivery_mode === "edit" && notif.message_id) {
+      try {
+        const existingMessage = await (channel as any).messages.fetch(
+          notif.message_id,
+        );
+        message = await existingMessage.edit(messageOptions);
+      } catch (error) {
+        const code = (error as { code?: number })?.code;
+        if (code !== 10008) {
+          throw error;
+        }
+
+        console.warn(
+          `[deliverNotification] Original message ${notif.message_id} was deleted; creating a replacement`,
+        );
+        message = await (channel as any).send(messageOptions);
+      }
+    } else {
+      message = await (channel as any).send(messageOptions);
+    }
     await api.markServerNotificationDelivered(notif.id, message.id);
 
     console.log(
-      `[deliverNotification] Sent #${notif.id} to channel ${notif.channel_id}`,
+      `[deliverNotification] ${notif.delivery_mode === "edit" ? "Synced" : "Sent"} #${notif.id} in channel ${notif.channel_id}`,
     );
   }
 }

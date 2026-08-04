@@ -1,9 +1,9 @@
 import type {ChatInputCommandInteraction} from 'discord.js';
+import {SlashCommandBuilder} from 'discord.js';
 import {
     ApplicationIntegrationType,
     InteractionContextType,
-    SlashCommandBuilder,
-} from 'discord.js';
+} from 'discord-api-types/v10';
 import {api, extractUrl} from '../services/api.ts';
 import type {Command} from './index.ts';
 
@@ -73,17 +73,16 @@ export const searchCommand: Command = {
             }
 
             if (response.length > 2000) {
-                // Truncate at the last complete game entry to avoid breaking formatting
-                const lines = response.split('\n\n');
-                response = '';
-                for (const block of lines) {
-                    if ((response + block + '\n\n').length > 1900) break;
-                    response += block + '\n\n';
-                }
-                response += '… results truncated';
+                let suffix = '\n\n… results truncated';
                 if (result.search_url) {
-                    response += ` — [view all](${result.search_url})`;
+                    suffix += ` — [view all](${result.search_url})`;
                 }
+                let body = response.slice(0, 2000 - suffix.length);
+                const lastBreak = body.lastIndexOf('\n\n');
+                if (lastBreak > 0) {
+                    body = body.slice(0, lastBreak);
+                }
+                response = body + suffix;
             }
 
             console.log(`[Search] Response length: ${response.length} chars`);

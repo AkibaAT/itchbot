@@ -2,20 +2,24 @@ import type { Client, Guild } from "discord.js";
 import { Events } from "discord.js";
 import { api } from "../services/api.ts";
 
+function apiChannels(guild: Guild) {
+  return guild.channels.cache
+    .filter((channel) => channel.isTextBased())
+    .map((channel) => ({
+      id: String(channel.id),
+      name: channel.name,
+      type: Number(channel.type),
+    }));
+}
+
 export function registerGuildEvents(client: Client) {
   client.on(Events.GuildCreate, async (guild: Guild) => {
     console.log(`[GuildCreate] Bot joined guild: ${guild.name} (${guild.id})`);
 
     try {
-      const channels = guild.channels.cache
-        .filter((ch) => ch.isTextBased())
-        .map((ch) => ({
-          id: ch.id,
-          name: (ch as any).name ?? ch.id,
-          type: ch.type,
-        }));
+      const channels = apiChannels(guild);
 
-      await api.botJoined(guild.id, guild.name, channels);
+      await api.botJoined(String(guild.id), guild.name, channels);
       console.log(
         `[GuildCreate] Registered with API. ${channels.length} channels synced.`,
       );
@@ -28,7 +32,7 @@ export function registerGuildEvents(client: Client) {
     console.log(`[GuildDelete] Bot left guild: ${guild.name} (${guild.id})`);
 
     try {
-      await api.botLeft(guild.id);
+      await api.botLeft(String(guild.id));
       console.log(`[GuildDelete] Marked as inactive in API`);
     } catch (error) {
       console.error(`[GuildDelete] Failed to notify API:`, error);
@@ -51,17 +55,23 @@ export function registerGuildEvents(client: Client) {
   });
 }
 
+export async function reconcileCurrentGuilds(client: Client<true>) {
+  const guilds = client.guilds.cache.map((guild) => ({
+    discord_server_id: String(guild.id),
+    discord_server_name: guild.name,
+    owner_discord_id: String(guild.ownerId),
+    channels: apiChannels(guild),
+  }));
+
+  await api.reconcileGuilds(guilds);
+  console.log(`[Ready] Reconciled ${guilds.length} guild(s) with API`);
+}
+
 async function syncGuildChannels(guild: Guild) {
   try {
-    const channels = guild.channels.cache
-      .filter((ch) => ch.isTextBased())
-      .map((ch) => ({
-        id: ch.id,
-        name: (ch as any).name ?? ch.id,
-        type: ch.type,
-      }));
+    const channels = apiChannels(guild);
 
-    await api.syncChannels(guild.id, channels);
+    await api.syncChannels(String(guild.id), channels);
   } catch (error) {
     console.error(`[syncChannels] Failed for ${guild.id}:`, error);
   }

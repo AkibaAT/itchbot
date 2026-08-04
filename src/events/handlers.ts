@@ -26,8 +26,14 @@ export function registerEvents(client: Client) {
             await command.execute(interaction);
         } catch (error) {
             console.error(`Error executing command ${interaction.commandName}:`, error);
-            if (interaction.deferred) {
-                await interaction.editReply('An unexpected error occurred');
+            try {
+                if (interaction.deferred || interaction.replied) {
+                    await interaction.editReply('An unexpected error occurred');
+                } else {
+                    await interaction.reply('An unexpected error occurred');
+                }
+            } catch (replyError) {
+                console.error(`Failed to send error reply for ${interaction.commandName}:`, replyError);
             }
         }
     });

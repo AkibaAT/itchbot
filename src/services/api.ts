@@ -4,6 +4,16 @@ interface ApiResponse {
     [key: string]: unknown;
 }
 
+export class ApiRequestError extends Error {
+    constructor(
+        public readonly status: number,
+        bodyPreview: string
+    ) {
+        super(`API request failed: ${status}, body: ${bodyPreview}`);
+        this.name = 'ApiRequestError';
+    }
+}
+
 const httpClient = {
     timeout: config.polling.httpTimeoutMs,
 };
@@ -37,7 +47,7 @@ export const api = {
         console.log(`[API] Response status: ${response.status}`);
 
         if (!response.ok) {
-            throw new Error(`API request failed: ${response.status}, body: ${responsePreview}`);
+            throw new ApiRequestError(response.status, responsePreview);
         }
 
         return JSON.parse(responseText) as T;
@@ -51,11 +61,25 @@ export const api = {
         return this.request('POST', '/discord/search', {name});
     },
 
-    async getUpdates(): Promise<{
-        updates: Update[];
-        discord_users: string[];
+    async getChannelUpdates(): Promise<{
+        notifications: ChannelUpdate[];
+        batch_key: string;
     }> {
-        return this.request('POST', '/discord/updates', null);
+        return this.request('GET', '/discord-notifications/channel-updates', null);
+    },
+
+    async recordChannelStatus(
+        batchKey: string,
+        results: Array<{
+            announcement_id: number;
+            success: boolean;
+            error: string;
+        }>
+    ): Promise<{ message: string }> {
+        return this.request('POST', '/discord-notifications/channel-status', {
+            batch_key: batchKey,
+            results,
+        });
     },
 
     async getPendingNotifications(): Promise<{
@@ -79,12 +103,12 @@ export const api = {
         });
     },
 
-    async getAdditionRequests(): Promise<{
+    async getAdditionRequests(since: Date): Promise<{
         notifications: AdditionRequest[];
         admin_panel_url: string;
     }> {
-        const since = encodeURIComponent(new Date(Date.now() - 5 * 60 * 1000).toISOString());
-        return this.request('GET', `/discord-notifications/addition-requests?limit=20&since=${since}`);
+        const sinceParam = encodeURIComponent(since.toISOString());
+        return this.request('GET', `/discord-notifications/addition-requests?limit=20&since=${sinceParam}`);
     },
 
     async getReviewReports(): Promise<{
@@ -142,6 +166,15 @@ export const api = {
         });
     },
 
+    async reconcileGuilds(guilds: Array<{
+        discord_server_id: string;
+        discord_server_name: string;
+        owner_discord_id?: string;
+        channels: Array<{ id: string; name: string; type?: number; nsfw?: boolean }>;
+    }>): Promise<{ message: string; count: number }> {
+        return this.request('POST', '/bot/servers/reconcile-guilds', {guilds});
+    },
+
     async botLeft(discordServerId: string): Promise<{ message: string }> {
         return this.request('POST', `/bot/servers/${discordServerId}/bot-left`, null);
     },
@@ -168,6 +201,10 @@ export interface Update {
     published_at: string | number;
     url: string | UrlMap;
     devlog?: string;
+}
+
+export interface ChannelUpdate extends Update {
+    announcement_id: number;
 }
 
 export interface Notification {
@@ -215,6 +252,8 @@ export interface ServerNotification {
     } | null;
     game_name?: string;
     notification_type: string;
+    delivery_mode: 'send' | 'edit';
+    message_id?: string | null;
 }
 
 export function extractUrl(url: string | UrlMap | undefined | null): string {

@@ -1,35 +1,74 @@
 import type {Client, GuildTextBasedChannel} from 'discord.js';
-import {api, extractUrl, type Update} from './api.ts';
+import {api, extractUrl, type ChannelUpdate, type Update} from './api.ts';
 import {config} from '../config.ts';
 import {DeliveryPolicy} from './delivery-policy.ts';
 
-export class NotificationService {
-    private readonly deliveryPolicy: DeliveryPolicy;
+const NO_MENTIONS = {parse: []} as const;
 
-    constructor(private client: Client) {
-        this.deliveryPolicy = new DeliveryPolicy(config.discord);
+export class NotificationService {
+    private readonly client: Client;
+    private readonly deliveryPolicy: DeliveryPolicy;
+    private additionRequestsSince = new Date(Date.now() - config.polling.intervalMs);
+
+    constructor(client: Client) {
+        this.client = client;
+        this.deliveryPolicy = new DeliveryPolicy({
+            devMode: config.discord.devMode,
+            devUserIds: config.discord.devUserIds,
+            devGuildIds: config.discord.devGuildIds,
+        });
     }
 
     async processUpdates() {
         console.log('\n[processUpdates] Start');
 
+        // Without a channel there is nothing to announce; leave the
+        // announcements pending on the server instead of claiming them.
+        if (!config.discord.notificationsChannelId) return;
+
         try {
-            const resp = await api.getUpdates();
-            const updates = resp.updates;
+            const resp = await api.getChannelUpdates();
+            const updates = resp.notifications;
 
             if (!updates || updates.length === 0) return;
 
-            const messageChunks = this.buildUpdateMessages(updates);
+            // The whole batch is announced as one series of messages, so it
+            // is acknowledged atomically: any failure requeues the batch.
+            const outcome = await this.announceUpdates(updates);
+            const results = updates.map(({announcement_id}) => ({
+                announcement_id,
+                success: outcome.success,
+                error: outcome.error,
+            }));
 
-            for (const userId of resp.discord_users) {
-                await this.sendUserNotifications(userId, messageChunks);
-            }
-
-            if (this.shouldNotifyChannel(resp.discord_users)) {
-                this.sendChannelNotifications(messageChunks);
-            }
+            await this.ackWithRetry('processUpdates', () =>
+                api.recordChannelStatus(resp.batch_key, results));
         } catch (error) {
             console.error('[processUpdates] Error:', error);
+        }
+    }
+
+    private async announceUpdates(updates: ChannelUpdate[]): Promise<{ success: boolean; error: string }> {
+        try {
+            const channel = await this.client.channels.fetch(config.discord.notificationsChannelId) as GuildTextBasedChannel | null;
+            if (!channel) {
+                return {success: false, error: 'Notifications channel not found'};
+            }
+
+            if (!this.deliveryPolicy.allowsGuild(channel.guildId)) {
+                console.log(`[processUpdates] Dev mode: marked ${updates.length} update(s) processed without announcing to guild ${channel.guildId}`);
+                return {success: true, error: ''};
+            }
+
+            for (const chunk of this.buildUpdateMessages(updates)) {
+                await channel.send({content: chunk, allowedMentions: NO_MENTIONS});
+            }
+
+            return {success: true, error: ''};
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('[processUpdates] Announce error:', errorMessage);
+            return {success: false, error: errorMessage};
         }
     }
 
@@ -84,8 +123,8 @@ export class NotificationService {
                 });
             }
 
-            const statusResp = await api.recordNotificationStatus(batchKey, results);
-            console.log(`[processUserNotifications] Status: ${statusResp.message}`);
+            await this.ackWithRetry('processUserNotifications', () =>
+                api.recordNotificationStatus(batchKey, results));
         } catch (error) {
             console.error('[processUserNotifications] Error:', error);
         }
@@ -100,7 +139,10 @@ export class NotificationService {
         }
 
         try {
-            const resp = await api.getAdditionRequests();
+            const since = this.additionRequestsSince;
+            const polledAt = new Date();
+            const resp = await api.getAdditionRequests(since);
+            this.additionRequestsSince = polledAt;
             const notifications = resp.notifications;
 
             if (!notifications || notifications.length === 0) return;
@@ -120,7 +162,7 @@ export class NotificationService {
 
                 const message = `🎮 **New VN Addition Request**\n\n**URL:** ${n.url}\n**Requested by:** ${userNames} (${n.user_count} user${pluralSuffix})\n**Admin Panel:** <${adminPanelUrl}>`;
 
-                await channel.send(message);
+                await channel.send({content: message, allowedMentions: NO_MENTIONS});
                 console.log(`[processAdditionRequestNotifications] Sent for: ${n.url}`);
             }
         } catch (error) {
@@ -163,7 +205,7 @@ export class NotificationService {
 
                 message += `\n\n**Admin Panel:** <${n.admin_panel_url}>`;
 
-                await channel.send(message);
+                await channel.send({content: message, allowedMentions: NO_MENTIONS});
                 console.log(`[processReviewReportNotifications] Sent for game: ${n.game_name}`);
             }
         } catch (error) {
@@ -198,56 +240,32 @@ export class NotificationService {
         return chunks;
     }
 
-    private async sendUserNotifications(userId: string, chunks: string[]) {
-        if (!this.deliveryPolicy.allowsUser(userId)) {
-            console.log(`[sendUserNotifications] Dev mode: skipped user ${userId}`);
-            return;
-        }
-
-        try {
-            const user = await this.client.users.fetch(userId);
-            const channel = await user.createDM();
-            for (const chunk of chunks) {
-                await channel.send(chunk);
-            }
-        } catch (error) {
-            console.error(`[sendUserNotifications] Error for ${userId}:`, error);
-        }
-    }
-
-    private async sendChannelNotifications(chunks: string[]) {
-        const channelId = config.discord.notificationsChannelId;
-        if (!channelId) return;
-
-        try {
-            const channel = await this.client.channels.fetch(channelId) as GuildTextBasedChannel | null;
-            if (!channel) {
-                console.error('[sendChannelNotifications] Channel not found');
+    private async ackWithRetry(
+        label: string,
+        recordStatus: () => Promise<{ message: string }>,
+        attempts = 3
+    ) {
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                const statusResp = await recordStatus();
+                console.log(`[${label}] Status: ${statusResp.message}`);
                 return;
+            } catch (error) {
+                if (attempt === attempts) {
+                    console.error(`[${label}] Failed to record status after ${attempts} attempts — server may re-deliver this batch:`, error);
+                    return;
+                }
+                console.warn(`[${label}] Status attempt ${attempt} failed, retrying:`, error);
+                await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
             }
-
-            if (!this.deliveryPolicy.allowsGuild(channel.guildId)) {
-                console.log(`[sendChannelNotifications] Dev mode: skipped guild ${channel.guildId}`);
-                return;
-            }
-
-            for (const chunk of chunks) {
-                await channel.send(chunk);
-            }
-        } catch (error) {
-            console.error('[sendChannelNotifications] Error:', error);
         }
-    }
-
-    private shouldNotifyChannel(users: string[]): boolean {
-        return users.includes(config.discord.adminId);
     }
 
     private async sendDM(userId: string, message: string): Promise<{ success: boolean; error: string }> {
         try {
             const user = await this.client.users.fetch(userId);
             const channel = await user.createDM();
-            await channel.send(message);
+            await channel.send({content: message, allowedMentions: NO_MENTIONS});
             return {success: true, error: ''};
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
