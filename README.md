@@ -36,8 +36,8 @@ The following environment variables must be set before starting the application:
 
 **Discord Configuration:**
 * `DISCORD_API_KEY` - Bot token from Discord Developer Portal
-* `DISCORD_ADMIN_ID` - Discord user ID for admin notifications
-* `DISCORD_NOTIFICATIONS_CHANNEL_ID` - Channel ID for broadcast notifications
+* `DISCORD_ADMIN_ID` - Discord user ID that receives the simple feed of every watched game update, addition request, and review report
+* `DISCORD_ADMIN_NOTIFICATIONS_CHANNEL_ID` - Optional channel ID that mirrors the admin update feed
 
 **Optional development mode:**
 * `DISCORD_DEV_MODE` - Set to `true` to restrict Discord deliveries

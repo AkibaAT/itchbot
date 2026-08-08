@@ -18,7 +18,7 @@ export const config = {
     discord: {
         token: requireEnv('DISCORD_API_KEY'),
         adminId: process.env['DISCORD_ADMIN_ID'] ?? '',
-        notificationsChannelId: process.env['DISCORD_NOTIFICATIONS_CHANNEL_ID'] ?? '',
+        adminNotificationsChannelId: process.env['DISCORD_ADMIN_NOTIFICATIONS_CHANNEL_ID'] ?? '',
         devMode: parseBoolean(process.env['DISCORD_DEV_MODE']),
         devUserIds: parseIds(process.env['DISCORD_DEV_USER_IDS']),
         devGuildIds: parseIds(process.env['DISCORD_DEV_GUILD_IDS']),

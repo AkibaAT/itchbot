@@ -22,9 +22,9 @@ export class NotificationService {
     async processUpdates() {
         console.log('\n[processUpdates] Start');
 
-        // Without a channel there is nothing to announce; leave the
-        // announcements pending on the server instead of claiming them.
-        if (!config.discord.notificationsChannelId) return;
+        // Leave announcements pending only when there is no configured
+        // destination. The admin DM does not depend on a broadcast channel.
+        if (!config.discord.adminId && !config.discord.adminNotificationsChannelId) return;
 
         try {
             const resp = await api.getChannelUpdates();
@@ -49,25 +49,68 @@ export class NotificationService {
     }
 
     private async announceUpdates(updates: ChannelUpdate[]): Promise<{ success: boolean; error: string }> {
+        const chunks = this.buildUpdateMessages(updates);
+
+        if (config.discord.adminId) {
+            const adminOutcome = await this.sendAdminUpdates(chunks);
+            if (!adminOutcome.success) return adminOutcome;
+
+            // The admin feed is the durable destination. A configured channel
+            // remains a best-effort mirror so a channel permission issue cannot
+            // cause duplicate admin DMs when the batch is retried.
+            if (config.discord.adminNotificationsChannelId) {
+                const channelOutcome = await this.sendChannelUpdates(chunks);
+                if (!channelOutcome.success) {
+                    console.error('[processUpdates] Channel mirror failed:', channelOutcome.error);
+                }
+            }
+
+            return {success: true, error: ''};
+        }
+
+        return this.sendChannelUpdates(chunks);
+    }
+
+    private async sendAdminUpdates(chunks: string[]): Promise<{ success: boolean; error: string }> {
+        if (!this.deliveryPolicy.allowsUser(config.discord.adminId)) {
+            console.log(`[processUpdates] Dev mode: marked update batch processed without sending to admin ${config.discord.adminId}`);
+            return {success: true, error: ''};
+        }
+
         try {
-            const channel = await this.client.channels.fetch(config.discord.notificationsChannelId) as GuildTextBasedChannel | null;
-            if (!channel) {
-                return {success: false, error: 'Notifications channel not found'};
-            }
+            const admin = await this.client.users.fetch(config.discord.adminId);
+            const channel = await admin.createDM();
 
-            if (!this.deliveryPolicy.allowsGuild(channel.guildId)) {
-                console.log(`[processUpdates] Dev mode: marked ${updates.length} update(s) processed without announcing to guild ${channel.guildId}`);
-                return {success: true, error: ''};
-            }
-
-            for (const chunk of this.buildUpdateMessages(updates)) {
+            for (const chunk of chunks) {
                 await channel.send({content: chunk, allowedMentions: NO_MENTIONS});
             }
 
             return {success: true, error: ''};
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error('[processUpdates] Announce error:', errorMessage);
+            console.error('[processUpdates] Admin DM error:', errorMessage);
+            return {success: false, error: errorMessage};
+        }
+    }
+
+    private async sendChannelUpdates(chunks: string[]): Promise<{ success: boolean; error: string }> {
+        try {
+            const channel = await this.client.channels.fetch(config.discord.adminNotificationsChannelId) as GuildTextBasedChannel | null;
+            if (!channel) return {success: false, error: 'Notifications channel not found'};
+
+            if (!this.deliveryPolicy.allowsGuild(channel.guildId)) {
+                console.log(`[processUpdates] Dev mode: marked update batch processed without announcing to guild ${channel.guildId}`);
+                return {success: true, error: ''};
+            }
+
+            for (const chunk of chunks) {
+                await channel.send({content: chunk, allowedMentions: NO_MENTIONS});
+            }
+
+            return {success: true, error: ''};
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('[processUpdates] Channel announce error:', errorMessage);
             return {success: false, error: errorMessage};
         }
     }
