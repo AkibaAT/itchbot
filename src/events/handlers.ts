@@ -1,9 +1,10 @@
 import type {Client} from 'discord.js';
 import {Events} from 'discord.js';
 import {searchCommand} from '../commands/search.ts';
+import {notificationsCommand} from '../commands/notifications.ts';
 import type {Command} from '../commands';
 
-const commands: Command[] = [searchCommand];
+const commands: Command[] = [searchCommand, notificationsCommand];
 
 export function registerEvents(client: Client) {
     client.on(Events.ClientReady, (client: Client<true>) => {

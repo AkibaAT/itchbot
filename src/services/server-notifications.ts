@@ -11,31 +11,33 @@ export class ServerNotificationService {
     this.client = client;
   }
 
-  async processServerNotifications() {
+  async processServerNotifications(): Promise<"ok" | "error"> {
     console.log("\n[processServerNotifications] Start");
 
     try {
       const resp = await api.getPendingServerNotifications();
       const notifications = resp.notifications;
 
-      if (!notifications || notifications.length === 0) return;
+      if (!notifications || notifications.length === 0) return "ok";
 
       console.log(
         `[processServerNotifications] Processing ${notifications.length} notifications`,
       );
 
       for (const notif of notifications) {
-        await this.deliverNotificationWithRetry(notif);
+        await this.deliverNotificationWithRetry(notif, resp.batch_key);
       }
+      return "ok";
     } catch (error) {
       console.error("[processServerNotifications] Error:", error);
+      return "error";
     }
   }
 
-  private async deliverNotificationWithRetry(notif: ServerNotification) {
+  private async deliverNotificationWithRetry(notif: ServerNotification, batchKey: string) {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        await this.deliverNotification(notif);
+        await this.deliverNotification(notif, batchKey);
         return;
       } catch (error) {
         const errorMessage =
@@ -54,7 +56,9 @@ export class ServerNotificationService {
           try {
             await api.markServerNotificationFailed(
               notif.id,
+              batchKey,
               errorMessage.slice(0, 500),
+              true,
             );
           } catch (statusError) {
             console.error(
@@ -67,7 +71,7 @@ export class ServerNotificationService {
     }
   }
 
-  private async deliverNotification(notif: ServerNotification) {
+  private async deliverNotification(notif: ServerNotification, batchKey: string) {
     const channel = (await this.client.channels.fetch(
       notif.channel_id,
     )) as TextBasedChannel | null;
@@ -75,7 +79,9 @@ export class ServerNotificationService {
     if (!channel || !channel.isTextBased()) {
       await api.markServerNotificationFailed(
         notif.id,
+        batchKey,
         `Channel ${notif.channel_id} not found or not text-based`,
+        false,
       );
       return;
     }
@@ -119,7 +125,7 @@ export class ServerNotificationService {
     } else {
       message = await (channel as any).send(messageOptions);
     }
-    await api.markServerNotificationDelivered(notif.id, message.id);
+    await api.markServerNotificationDelivered(notif.id, batchKey, message.id);
 
     console.log(
       `[deliverNotification] ${notif.delivery_mode === "edit" ? "Synced" : "Sent"} #${notif.id} in channel ${notif.channel_id}`,

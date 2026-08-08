@@ -9,6 +9,7 @@ function apiChannels(guild: Guild) {
       id: String(channel.id),
       name: channel.name,
       type: Number(channel.type),
+      nsfw: 'nsfw' in channel ? Boolean(channel.nsfw) : false,
     }));
 }
 
@@ -19,7 +20,7 @@ export function registerGuildEvents(client: Client) {
     try {
       const channels = apiChannels(guild);
 
-      await api.botJoined(String(guild.id), guild.name, channels);
+      await api.botJoined(String(guild.id), guild.name, channels, String(guild.ownerId));
       console.log(
         `[GuildCreate] Registered with API. ${channels.length} channels synced.`,
       );

@@ -14,6 +14,18 @@ export class ApiRequestError extends Error {
     }
 }
 
+const MAX_REQUEST_ATTEMPTS = 3;
+
+function isRetryable(error: unknown): boolean {
+    if (error instanceof ApiRequestError) return error.status === 429 || error.status >= 500;
+    return error instanceof TypeError || error instanceof DOMException;
+}
+
+async function sleepBeforeRetry(attempt: number): Promise<void> {
+    const delay = 250 * (2 ** (attempt - 1)) + Math.floor(Math.random() * 100);
+    await Bun.sleep(delay);
+}
+
 const httpClient = {
     timeout: config.polling.httpTimeoutMs,
 };
@@ -28,29 +40,37 @@ export const api = {
         console.log(`[API] ${method} ${url}`);
 
         const body = data ? JSON.stringify(data) : undefined;
-        const response = await fetch(url, {
-            method,
-            headers: {
-                Authorization: `Bearer ${config.laravel.apiToken}`,
-                Accept: 'application/json',
-                'Content-Type': 'application/json',
-            },
-            body,
-            signal: AbortSignal.timeout(httpClient.timeout),
-        });
+        for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt++) {
+            try {
+                const response = await fetch(url, {
+                    method,
+                    headers: {
+                        Authorization: `Bearer ${config.laravel.apiToken}`,
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    body,
+                    signal: AbortSignal.timeout(httpClient.timeout),
+                });
 
-        const responseText = await response.text();
-        const responsePreview = responseText.length > 100
-            ? responseText.slice(0, 100) + '...'
-            : responseText;
+                const responseText = await response.text();
+                const responsePreview = responseText.length > 100
+                    ? responseText.slice(0, 100) + '...'
+                    : responseText;
 
-        console.log(`[API] Response status: ${response.status}`);
+                console.log(`[API] Response status: ${response.status}`);
 
-        if (!response.ok) {
-            throw new ApiRequestError(response.status, responsePreview);
+                if (!response.ok) throw new ApiRequestError(response.status, responsePreview);
+
+                return JSON.parse(responseText) as T;
+            } catch (error) {
+                if (attempt === MAX_REQUEST_ATTEMPTS || !isRetryable(error)) throw error;
+                console.warn(`[API] Transient failure on attempt ${attempt}; retrying`, error);
+                await sleepBeforeRetry(attempt);
+            }
         }
 
-        return JSON.parse(responseText) as T;
+        throw new Error('API retry loop exhausted');
     },
 
     async search(name: string): Promise<{
@@ -95,6 +115,8 @@ export const api = {
             notification_id: number;
             success: boolean;
             error: string;
+            error_code: string | null;
+            retryable: boolean;
         }>
     ): Promise<{ message: string }> {
         return this.request('POST', '/discord-notifications/status', {
@@ -103,12 +125,15 @@ export const api = {
         });
     },
 
-    async getAdditionRequests(since: Date): Promise<{
+    async getAdditionRequests(): Promise<{
         notifications: AdditionRequest[];
         admin_panel_url: string;
     }> {
-        const sinceParam = encodeURIComponent(since.toISOString());
-        return this.request('GET', `/discord-notifications/addition-requests?limit=20&since=${sinceParam}`);
+        return this.request('GET', '/discord-notifications/addition-requests?limit=20');
+    },
+
+    async ackAdditionRequests(ids: number[]): Promise<{ success: boolean }> {
+        return this.request('POST', '/discord-notifications/addition-requests/ack', {ids});
     },
 
     async getReviewReports(): Promise<{
@@ -117,19 +142,40 @@ export const api = {
         return this.request('GET', '/discord-notifications/review-reports', null);
     },
 
+    async ackReviewReports(ids: number[]): Promise<{ success: boolean }> {
+        return this.request('POST', '/discord-notifications/review-reports/ack', {ids});
+    },
+
+    async verifyDm(discordUserId: string, success: boolean, errorCode: string | null): Promise<{ success: boolean }> {
+        return this.request('POST', '/discord-notifications/dm-verify', {
+            discord_user_id: discordUserId,
+            success,
+            error_code: errorCode,
+        });
+    },
+
+    async heartbeat(status: 'ok' | 'degraded' | 'error', passes: Record<string, string>): Promise<{ success: boolean }> {
+        return this.request('POST', '/discord-notifications/heartbeat', {status, passes});
+    },
+
     async getPendingServerNotifications(limit = 50): Promise<{
         notifications: ServerNotification[];
+        batch_key: string;
         count: number;
     }> {
         return this.request('GET', `/bot/servers/pending-notifications?limit=${limit}`, null);
     },
 
-    async markServerNotificationDelivered(notificationId: number, messageId?: string): Promise<{ message: string }> {
-        return this.request('POST', `/bot/servers/notifications/${notificationId}/delivered`, {message_id: messageId});
+    async markServerNotificationDelivered(notificationId: number, batchKey: string, messageId?: string): Promise<{ message: string }> {
+        return this.request('POST', `/bot/servers/notifications/${notificationId}/delivered`, {batch_key: batchKey, message_id: messageId});
     },
 
-    async markServerNotificationFailed(notificationId: number, errorMessage?: string): Promise<{ message: string }> {
-        return this.request('POST', `/bot/servers/notifications/${notificationId}/failed`, {error_message: errorMessage});
+    async markServerNotificationFailed(notificationId: number, batchKey: string, errorMessage?: string, retryable = false): Promise<{ message: string }> {
+        return this.request('POST', `/bot/servers/notifications/${notificationId}/failed`, {
+            batch_key: batchKey,
+            error_message: errorMessage,
+            retryable,
+        });
     },
 
     async syncChannels(
@@ -139,16 +185,6 @@ export const api = {
         return this.request('POST', '/bot/servers/sync-channels', {
             discord_server_id: discordServerId,
             channels,
-        });
-    },
-
-    async syncMembers(
-        discordServerId: string,
-        members: Array<{ discord_user_id: string; discord_username: string; is_admin: boolean }>
-    ): Promise<{ message: string; count: number }> {
-        return this.request('POST', '/bot/servers/sync-members', {
-            discord_server_id: discordServerId,
-            members,
         });
     },
 
@@ -210,6 +246,7 @@ export interface ChannelUpdate extends Update {
 export interface Notification {
     notification_id: number;
     discord_user_id: string;
+    type: 'game_update' | 'test';
     game: {
         name: string;
         version: string;
@@ -221,18 +258,20 @@ export interface Notification {
             version: string;
             is_last_read: boolean;
         };
-    };
+    } | null;
     is_digest: boolean;
     digest_type?: string;
 }
 
 export interface AdditionRequest {
+    id: number;
     url: string;
     user_count: number;
     users: Array<{ name: string }>;
 }
 
 export interface ReviewReport {
+    id: number;
     reason: string;
     reporter: string;
     review_author: string;

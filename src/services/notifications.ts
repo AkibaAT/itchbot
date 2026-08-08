@@ -1,14 +1,29 @@
 import type {Client, GuildTextBasedChannel} from 'discord.js';
-import {api, extractUrl, type ChannelUpdate, type Update} from './api.ts';
 import {config} from '../config.ts';
+import {api, extractUrl, type ChannelUpdate, type Update} from './api.ts';
 import {DeliveryPolicy} from './delivery-policy.ts';
+import {classifyDiscordError, type DiscordErrorClassification} from './discord-errors.ts';
 
 const NO_MENTIONS = {parse: []} as const;
+const MESSAGE_LIMIT = 1900;
+
+export interface DeliveryResult {
+    success: boolean;
+    error: string;
+    errorCode: string | null;
+    retryable: boolean;
+}
+
+interface UpdateChunk {
+    content: string;
+    announcementIds: number[];
+}
+
+const success = (): DeliveryResult => ({success: true, error: '', errorCode: null, retryable: false});
 
 export class NotificationService {
     private readonly client: Client;
     private readonly deliveryPolicy: DeliveryPolicy;
-    private additionRequestsSince = new Date(Date.now() - config.polling.intervalMs);
 
     constructor(client: Client) {
         this.client = client;
@@ -19,301 +34,240 @@ export class NotificationService {
         });
     }
 
-    async processUpdates() {
+    async processUpdates(): Promise<'ok' | 'error'> {
         console.log('\n[processUpdates] Start');
-
-        // Leave announcements pending only when there is no configured
-        // destination. The admin DM does not depend on a broadcast channel.
-        if (!config.discord.adminId && !config.discord.adminNotificationsChannelId) return;
+        if (!config.discord.adminId && !config.discord.adminNotificationsChannelId) return 'ok';
 
         try {
-            const resp = await api.getChannelUpdates();
-            const updates = resp.notifications;
+            const response = await api.getChannelUpdates();
+            if (!response.notifications?.length) return 'ok';
 
-            if (!updates || updates.length === 0) return;
+            const results: Array<{ announcement_id: number; success: boolean; error: string }> = [];
+            for (const chunk of this.buildUpdateMessages(response.notifications)) {
+                const outcome = await this.announceUpdateChunk(chunk.content);
+                for (const announcementId of chunk.announcementIds) {
+                    results.push({announcement_id: announcementId, success: outcome.success, error: outcome.error});
+                }
+            }
 
-            // The whole batch is announced as one series of messages, so it
-            // is acknowledged atomically: any failure requeues the batch.
-            const outcome = await this.announceUpdates(updates);
-            const results = updates.map(({announcement_id}) => ({
-                announcement_id,
-                success: outcome.success,
-                error: outcome.error,
-            }));
-
-            await this.ackWithRetry('processUpdates', () =>
-                api.recordChannelStatus(resp.batch_key, results));
+            await api.recordChannelStatus(response.batch_key, results);
+            return results.every((result) => result.success) ? 'ok' : 'error';
         } catch (error) {
             console.error('[processUpdates] Error:', error);
+            return 'error';
         }
     }
 
-    private async announceUpdates(updates: ChannelUpdate[]): Promise<{ success: boolean; error: string }> {
-        const chunks = this.buildUpdateMessages(updates);
-
+    private async announceUpdateChunk(content: string): Promise<DeliveryResult> {
         if (config.discord.adminId) {
-            const adminOutcome = await this.sendAdminUpdates(chunks);
+            const adminOutcome = await this.sendAdminUpdate(content);
             if (!adminOutcome.success) return adminOutcome;
 
-            // The admin feed is the durable destination. A configured channel
-            // remains a best-effort mirror so a channel permission issue cannot
-            // cause duplicate admin DMs when the batch is retried.
             if (config.discord.adminNotificationsChannelId) {
-                const channelOutcome = await this.sendChannelUpdates(chunks);
-                if (!channelOutcome.success) {
-                    console.error('[processUpdates] Channel mirror failed:', channelOutcome.error);
-                }
+                const mirror = await this.sendChannelUpdate(content);
+                if (!mirror.success) console.error('[processUpdates] Channel mirror failed:', mirror.error);
             }
-
-            return {success: true, error: ''};
+            return success();
         }
 
-        return this.sendChannelUpdates(chunks);
+        return this.sendChannelUpdate(content);
     }
 
-    private async sendAdminUpdates(chunks: string[]): Promise<{ success: boolean; error: string }> {
+    private async sendAdminUpdate(content: string): Promise<DeliveryResult> {
         if (!this.deliveryPolicy.allowsUser(config.discord.adminId)) {
-            console.log(`[processUpdates] Dev mode: marked update batch processed without sending to admin ${config.discord.adminId}`);
-            return {success: true, error: ''};
+            return this.suppressed('admin user', config.discord.adminId);
         }
-
-        try {
-            const admin = await this.client.users.fetch(config.discord.adminId);
-            const channel = await admin.createDM();
-
-            for (const chunk of chunks) {
-                await channel.send({content: chunk, allowedMentions: NO_MENTIONS});
-            }
-
-            return {success: true, error: ''};
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error('[processUpdates] Admin DM error:', errorMessage);
-            return {success: false, error: errorMessage};
-        }
+        return this.sendDM(config.discord.adminId, content);
     }
 
-    private async sendChannelUpdates(chunks: string[]): Promise<{ success: boolean; error: string }> {
+    private async sendChannelUpdate(content: string): Promise<DeliveryResult> {
         try {
             const channel = await this.client.channels.fetch(config.discord.adminNotificationsChannelId) as GuildTextBasedChannel | null;
-            if (!channel) return {success: false, error: 'Notifications channel not found'};
+            if (!channel) return this.failure(new Error('Notifications channel not found'));
+            if (!this.deliveryPolicy.allowsGuild(channel.guildId)) return this.suppressed('guild', channel.guildId);
 
-            if (!this.deliveryPolicy.allowsGuild(channel.guildId)) {
-                console.log(`[processUpdates] Dev mode: marked update batch processed without announcing to guild ${channel.guildId}`);
-                return {success: true, error: ''};
-            }
-
-            for (const chunk of chunks) {
-                await channel.send({content: chunk, allowedMentions: NO_MENTIONS});
-            }
-
-            return {success: true, error: ''};
+            await channel.send({content, allowedMentions: NO_MENTIONS});
+            return success();
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error('[processUpdates] Channel announce error:', errorMessage);
-            return {success: false, error: errorMessage};
+            return this.failure(error);
         }
     }
 
-    async processUserNotifications() {
+    async processUserNotifications(): Promise<'ok' | 'error'> {
         console.log('\n[processUserNotifications] Start');
-
         try {
-            const resp = await api.getPendingNotifications();
-            const notifications = resp.notifications;
+            const response = await api.getPendingNotifications();
+            if (!response.notifications?.length) return 'ok';
 
-            if (!notifications || notifications.length === 0) return;
+            const results: Array<{
+                notification_id: number;
+                success: boolean;
+                error: string;
+                error_code: string | null;
+                retryable: boolean;
+            }> = [];
 
-            const batchKey = resp.batch_key;
-            const results: Array<{ notification_id: number; success: boolean; error: string }> = [];
-
-            for (const notif of notifications) {
-                const {notification_id, discord_user_id, game, is_digest, digest_type} = notif;
-
-                if (!this.deliveryPolicy.allowsUser(discord_user_id)) {
-                    console.log(`[processUserNotifications] Dev mode: marked ${notification_id} processed without sending to user ${discord_user_id}`);
-                    results.push({notification_id, success: true, error: ''});
-                    continue;
-                }
-
-                const gameUrl = extractUrl(game.url);
-                const devlogUrl = game.devlog_url ?? '';
-
-                let wordCountMsg = '';
-                if (game.word_count_diff && game.word_count_diff !== 0) {
-                    const comparedVersion = game.compared_to_version;
-                    const compareType = comparedVersion?.is_last_read ? 'your last read' : 'previous version';
-                    wordCountMsg = `\nWord count change from ${compareType} (${comparedVersion?.version}): ${game.word_count_diff > 0 ? '+' : ''}${game.word_count_diff.toLocaleString()} words`;
-                }
-
-                let message: string;
-                if (is_digest) {
-                    const digestTypeStr = digest_type === 'daily'
-                        ? 'Daily Game Updates'
-                        : digest_type === 'weekly'
-                            ? 'Weekly Game Updates'
-                            : 'Game Updates';
-                    message = `${digestTypeStr}\n${game.name}\nVersion: ${game.version}\nReleased: <t:${Math.floor(game.published_at)}:f>${wordCountMsg}\nGame: <${gameUrl}>\nDevlog: <${devlogUrl}>`;
+            for (const notification of response.notifications) {
+                let outcome: DeliveryResult;
+                if (!this.deliveryPolicy.allowsUser(notification.discord_user_id)) {
+                    outcome = this.suppressed('user', notification.discord_user_id);
                 } else {
-                    message = `New Update Available!\n\n${game.name}\nVersion: ${game.version}\nReleased: <t:${Math.floor(game.published_at)}:f>${wordCountMsg}\nGame: <${gameUrl}>\nDevlog: <${devlogUrl}>`;
+                    const message = notification.type === 'test' || !notification.game
+                        ? 'FVN.li notification test\n\nIf you received this message, Discord direct-message delivery is working.'
+                        : this.gameUpdateMessage(notification.game, notification.is_digest, notification.digest_type);
+                    outcome = await this.sendDM(notification.discord_user_id, message);
                 }
 
-                const result = await this.sendDM(discord_user_id, message);
                 results.push({
-                    notification_id,
-                    success: result.success,
-                    error: result.error,
+                    notification_id: notification.notification_id,
+                    success: outcome.success,
+                    error: outcome.error,
+                    error_code: outcome.errorCode,
+                    retryable: outcome.retryable,
                 });
             }
 
-            await this.ackWithRetry('processUserNotifications', () =>
-                api.recordNotificationStatus(batchKey, results));
+            await api.recordNotificationStatus(response.batch_key, results);
+            return results.every((result) => result.success) ? 'ok' : 'error';
         } catch (error) {
             console.error('[processUserNotifications] Error:', error);
+            return 'error';
         }
     }
 
-    async processAdditionRequestNotifications() {
+    async processAdditionRequestNotifications(): Promise<'ok' | 'error'> {
         console.log('\n[processAdditionRequestNotifications] Start');
-
-        if (!config.discord.adminId && !this.deliveryPolicy.isDevMode) {
-            console.log('[processAdditionRequestNotifications] No admin ID configured, skipping');
-            return;
-        }
+        if (!config.discord.adminId && !this.deliveryPolicy.isDevMode) return 'ok';
 
         try {
-            const since = this.additionRequestsSince;
-            const polledAt = new Date();
-            const resp = await api.getAdditionRequests(since);
-            this.additionRequestsSince = polledAt;
-            const notifications = resp.notifications;
-
-            if (!notifications || notifications.length === 0) return;
-
+            const response = await api.getAdditionRequests();
+            if (!response.notifications?.length) return 'ok';
             if (!this.deliveryPolicy.allowsUser(config.discord.adminId)) {
-                console.log(`[processAdditionRequestNotifications] Dev mode: marked ${notifications.length} notification(s) processed without sending`);
-                return;
+                console.log('[processAdditionRequestNotifications] Dev mode suppressed delivery; claim left for expiry');
+                return 'error';
             }
 
-            const adminPanelUrl = resp.admin_panel_url ?? '';
-            const adminUser = await this.client.users.fetch(config.discord.adminId);
-            const channel = await adminUser.createDM();
-
-            for (const n of notifications) {
-                const userNames = n.users.map((u) => u.name).join(', ');
-                const pluralSuffix = n.user_count !== 1 ? 's' : '';
-
-                const message = `🎮 **New VN Addition Request**\n\n**URL:** ${n.url}\n**Requested by:** ${userNames} (${n.user_count} user${pluralSuffix})\n**Admin Panel:** <${adminPanelUrl}>`;
-
-                await channel.send({content: message, allowedMentions: NO_MENTIONS});
-                console.log(`[processAdditionRequestNotifications] Sent for: ${n.url}`);
+            const delivered: number[] = [];
+            for (const notification of response.notifications) {
+                const users = notification.users.map((user) => user.name).join(', ');
+                const suffix = notification.user_count === 1 ? '' : 's';
+                const message = `🎮 **New VN Addition Request**\n\n**URL:** ${notification.url}\n**Requested by:** ${users} (${notification.user_count} user${suffix})\n**Admin Panel:** <${response.admin_panel_url}>`;
+                const outcome = await this.sendDM(config.discord.adminId, message);
+                if (!outcome.success) return 'error';
+                await api.ackAdditionRequests([notification.id]);
+                delivered.push(notification.id);
             }
+            console.log(`[processAdditionRequestNotifications] Acknowledged ${delivered.length} request(s)`);
+            return 'ok';
         } catch (error) {
             console.error('[processAdditionRequestNotifications] Error:', error);
+            return 'error';
         }
     }
 
-    async processReviewReportNotifications() {
+    async processReviewReportNotifications(): Promise<'ok' | 'error'> {
         console.log('\n[processReviewReportNotifications] Start');
-
-        if (!config.discord.adminId && !this.deliveryPolicy.isDevMode) {
-            console.log('[processReviewReportNotifications] No admin ID configured, skipping');
-            return;
-        }
+        if (!config.discord.adminId && !this.deliveryPolicy.isDevMode) return 'ok';
 
         try {
-            const resp = await api.getReviewReports();
-            const notifications = resp.notifications;
-
-            if (!notifications || notifications.length === 0) return;
-
+            const response = await api.getReviewReports();
+            if (!response.notifications?.length) return 'ok';
             if (!this.deliveryPolicy.allowsUser(config.discord.adminId)) {
-                console.log(`[processReviewReportNotifications] Dev mode: marked ${notifications.length} notification(s) processed without sending`);
-                return;
+                console.log('[processReviewReportNotifications] Dev mode suppressed delivery; claim left for expiry');
+                return 'error';
             }
 
-            const adminUser = await this.client.users.fetch(config.discord.adminId);
-            const channel = await adminUser.createDM();
+            for (const notification of response.notifications) {
+                let message = `🚩 **Review Report**\n\n**Game:** ${notification.game_name}\n**Review by:** ${notification.review_author}\n**Reported by:** ${notification.reporter}\n**Reason:** ${notification.reason}`;
+                if (notification.details) message += `\n**Details:** ${notification.details}`;
+                if (notification.review_excerpt) message += `\n\n> ${notification.review_excerpt.slice(0, 200)}`;
+                message += `\n\n**Admin Panel:** <${notification.admin_panel_url}>`;
 
-            for (const n of notifications) {
-                let message = `🚩 **Review Report**\n\n**Game:** ${n.game_name}\n**Review by:** ${n.review_author}\n**Reported by:** ${n.reporter}\n**Reason:** ${n.reason}`;
-
-                if (n.details) {
-                    message += `\n**Details:** ${n.details}`;
-                }
-
-                if (n.review_excerpt) {
-                    message += `\n\n> ${n.review_excerpt.slice(0, 200)}`;
-                }
-
-                message += `\n\n**Admin Panel:** <${n.admin_panel_url}>`;
-
-                await channel.send({content: message, allowedMentions: NO_MENTIONS});
-                console.log(`[processReviewReportNotifications] Sent for game: ${n.game_name}`);
+                const outcome = await this.sendDM(config.discord.adminId, message);
+                if (!outcome.success) return 'error';
+                await api.ackReviewReports([notification.id]);
             }
+            return 'ok';
         } catch (error) {
             console.error('[processReviewReportNotifications] Error:', error);
+            return 'error';
         }
     }
 
-    private buildUpdateMessages(updates: Update[]): string[] {
-        const chunks: string[] = [];
-        let currentChunk = `Found ${updates.length} new updates:\n`;
+    async testDm(userId: string): Promise<DeliveryResult> {
+        return this.sendDM(userId, 'FVN.li notification test\n\nDiscord direct-message delivery is working.');
+    }
+
+    buildUpdateMessages(updates: ChannelUpdate[]): UpdateChunk[] {
+        const chunks: UpdateChunk[] = [];
+        let content = `Found ${updates.length} new updates:\n`;
+        let announcementIds: number[] = [];
 
         for (const update of updates) {
-            const publishedAt = typeof update.published_at === 'number'
-                ? Math.floor(update.published_at).toString()
-                : update.published_at;
+            let entry = this.updateEntry(update);
 
-            const url = extractUrl(update.url);
-
-            const entry = `${update.name}, Latest Version: ${update.version}, Last Updated At: <t:${publishedAt}:f> <${url}> | <${update.devlog ?? ''}>\n`;
-
-            if (currentChunk.length + entry.length > 1900) {
-                chunks.push(currentChunk);
-                currentChunk = '';
+            if (content.length + entry.length > MESSAGE_LIMIT && announcementIds.length > 0) {
+                chunks.push({content, announcementIds});
+                content = '';
+                announcementIds = [];
             }
-            currentChunk += entry;
+            if (content.length + entry.length > MESSAGE_LIMIT) {
+                const available = MESSAGE_LIMIT - content.length;
+                entry = `${entry.slice(0, Math.max(0, available - 2))}…\n`;
+            }
+            content += entry;
+            announcementIds.push(update.announcement_id);
         }
 
-        if (currentChunk.length > 0) {
-            chunks.push(currentChunk);
-        }
-
+        if (announcementIds.length > 0) chunks.push({content, announcementIds});
         return chunks;
     }
 
-    private async ackWithRetry(
-        label: string,
-        recordStatus: () => Promise<{ message: string }>,
-        attempts = 3
-    ) {
-        for (let attempt = 1; attempt <= attempts; attempt++) {
-            try {
-                const statusResp = await recordStatus();
-                console.log(`[${label}] Status: ${statusResp.message}`);
-                return;
-            } catch (error) {
-                if (attempt === attempts) {
-                    console.error(`[${label}] Failed to record status after ${attempts} attempts — server may re-deliver this batch:`, error);
-                    return;
-                }
-                console.warn(`[${label}] Status attempt ${attempt} failed, retrying:`, error);
-                await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
-            }
-        }
+    private updateEntry(update: Update): string {
+        const publishedAt = typeof update.published_at === 'number' ? Math.floor(update.published_at).toString() : update.published_at;
+        return `${update.name}, Latest Version: ${update.version}, Last Updated At: <t:${publishedAt}:f> <${extractUrl(update.url)}> | <${update.devlog ?? ''}>\n`;
     }
 
-    private async sendDM(userId: string, message: string): Promise<{ success: boolean; error: string }> {
+    private gameUpdateMessage(game: NonNullable<import('./api.ts').Notification['game']>, isDigest: boolean, digestType?: string): string {
+        const gameUrl = extractUrl(game.url);
+        const devlogUrl = game.devlog_url ?? '';
+        let wordCount = '';
+        if (game.word_count_diff) {
+            const compared = game.compared_to_version;
+            const compareType = compared?.is_last_read ? 'your last read' : 'previous version';
+            wordCount = `\nWord count change from ${compareType} (${compared?.version}): ${game.word_count_diff > 0 ? '+' : ''}${game.word_count_diff.toLocaleString()} words`;
+        }
+        const heading = isDigest
+            ? digestType === 'daily' ? 'Daily Game Updates' : digestType === 'weekly' ? 'Weekly Game Updates' : 'Game Updates'
+            : 'New Update Available!';
+        return `${heading}\n\n${game.name}\nVersion: ${game.version}\nReleased: <t:${Math.floor(game.published_at)}:f>${wordCount}\nGame: <${gameUrl}>\nDevlog: <${devlogUrl}>`;
+    }
+
+    private async sendDM(userId: string, message: string): Promise<DeliveryResult> {
         try {
             const user = await this.client.users.fetch(userId);
             const channel = await user.createDM();
             await channel.send({content: message, allowedMentions: NO_MENTIONS});
-            return {success: true, error: ''};
+            return success();
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error(`[sendDM] Error for ${userId}:`, errorMessage);
-            return {success: false, error: errorMessage};
+            console.error(`[sendDM] Error for ${userId}:`, error);
+            return this.failure(error);
         }
+    }
+
+    private failure(error: unknown): DeliveryResult {
+        const classified: DiscordErrorClassification = classifyDiscordError(error);
+        return {
+            success: false,
+            error: classified.message.slice(0, 1000),
+            errorCode: classified.code,
+            retryable: classified.category === 'retryable',
+        };
+    }
+
+    private suppressed(target: string, id: string): DeliveryResult {
+        const error = `dev_mode_suppressed:${target}:${id}`;
+        console.log(`[delivery] ${error}`);
+        return {success: false, error, errorCode: 'dev_mode_suppressed', retryable: true};
     }
 }
